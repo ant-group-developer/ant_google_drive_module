@@ -202,7 +202,6 @@ export class GoogleDriveService {
                     .filter(x => x.r.status === 'rejected')
                     .map(x => x.chunk);
             }
-
             const mergedFilePath = await this.mergeChunksFromBuffers(originalName, chunks);
 
             const driveResult = await this.uploadMergedFileToDrive(mergedFilePath, folderId);
@@ -222,11 +221,42 @@ export class GoogleDriveService {
         }
     }
 
-    async completeUpload(originalName: string, folderId: string) {
+    async checkFullChunks(originalName: string, chunkNumber: number) {
+        try {
+            const tmpDir = path.join(process.cwd(), 'tmp', originalName);
+            if (!fs.existsSync(tmpDir)) {
+                throw new Error(`Temp folder not found: ${tmpDir}`);
+            }
+
+            const missingChunks: number[] = [];
+
+            for (let i = 0; i < chunkNumber; i++) {
+                const chunkPath = path.join(tmpDir, `${originalName}_chunk_${i}`);
+
+                if (!fs.existsSync(chunkPath)) {
+                    missingChunks.push(i);
+                }
+            }
+
+            return missingChunks;
+        } catch (error) {
+            throw new Error(error)
+        }
+    }
+
+    async completeUpload(originalName: string, folderId: string, chunkNumber: number) {
         try {
             if (!originalName) throw new Error("originalName is required");
             if (!folderId) throw new Error("folderId is required");
-
+            if (!chunkNumber) throw new Error("chunkNumber is required");
+            const missingChunks = await this.checkFullChunks(originalName, chunkNumber);
+            if(missingChunks.length !== 0) {
+                return {
+                    status: "fail",
+                    message: "Missing chunks!",
+                    missingChunks
+                }
+            }
             const finalPath = await this.mergeChunksDisk(originalName);
 
             const driveResult = await this.uploadMergedFileToDrive(finalPath, folderId);
@@ -239,6 +269,7 @@ export class GoogleDriveService {
                 driveId: driveResult.driveId,
                 linkToFile: `https://drive.google.com/file/d/${driveResult.driveId}`,
                 linkToFolder: `https://drive.google.com/drive/folders/${folderId}`,
+                message: "Upload file success to google drive"
             };
         } catch (err) {
             throw new Error(err);

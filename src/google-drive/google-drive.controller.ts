@@ -29,9 +29,9 @@ export class GoogleDriveController {
 
     @Post('upload/complete')
     async completeUpload(
-        @Body() body: { originalName: string, folderId: string }
+        @Body() body: { originalName: string, folderId: string, chunkNumber: number }
     ) {
-        return this.googleDriveService.completeUpload(body.originalName, body.folderId);
+        return this.googleDriveService.completeUpload(body.originalName, body.folderId, body.chunkNumber);
     }
 
     //Lấy metadata của fileId hoặc folderId
