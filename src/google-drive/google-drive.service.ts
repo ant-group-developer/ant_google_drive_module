@@ -4,7 +4,8 @@ import * as path from 'path';
 import { google } from 'googleapis';
 import * as dotenv from 'dotenv';
 dotenv.config();
-
+import archiver from 'archiver';
+import { PassThrough } from 'stream';
 @Injectable()
 export class GoogleDriveService {
     private readonly MAX_CHUNK: number = Number(process.env.MAX_CHUNK_SIZE) || 50 * 1024;
@@ -241,6 +242,205 @@ export class GoogleDriveService {
             };
         } catch (err) {
             throw new Error(err);
+        }
+    }
+
+
+    async buildFolderTree(folderId: string) {
+        const meta = await this.drive.files.get({
+            fileId: folderId,
+            fields: 'id, name, mimeType, size, modifiedTime',
+            supportsAllDrives: true
+        });
+
+        const folderMeta = meta.data;
+
+        const res = await this.drive.files.list({
+            q: `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+            fields: 'files(id, name)',
+            includeItemsFromAllDrives: true,
+            supportsAllDrives: true,
+            pageSize: 1000
+        });
+
+        const folders = res.data.files || [];
+
+        const children = await Promise.all(
+            folders.map(async folder => ({
+                ...(await this.buildFolderTree(folder.id))
+            }))
+        );
+
+        return {
+            id: folderMeta.id,
+            name: folderMeta.name,
+            mimeType: folderMeta.mimeType,
+            size: folderMeta.size || null,
+            modifiedTime: folderMeta.modifiedTime,
+            linkToFolder: `https://drive.google.com/drive/folders/${folderMeta.id}`,
+            children
+        };
+    }
+
+
+    async getChildFolders(folderId?: string) {
+        try {
+            const parentId = (!folderId || folderId === 'null' || folderId === 'undefined')
+                ? 'root'
+                : folderId;
+
+            return await this.buildFolderTree(parentId);
+
+        } catch (err) {
+            throw new Error(err);
+        }
+    }
+
+    async getListFilesByFolderId(folderId: string) {
+        try {
+            if (!folderId) {
+                throw new Error("Missing parameter !")
+            }
+            const res = await this.drive.files.list({
+                q: `'${folderId}' in parents and trashed=false`,
+                fields: 'files(id, name, mimeType, size, modifiedTime)',
+                includeItemsFromAllDrives: true,
+                supportsAllDrives: true,
+                pageSize: 1000
+            });
+
+            const items = res.data.files || [];
+
+            const folders = items
+                .filter(item => item.mimeType === 'application/vnd.google-apps.folder')
+                .map(folder => ({
+                    ...folder,
+                    linkToFolder: `https://drive.google.com/drive/folders/${folder.id}`
+                }));
+
+            const files = items
+                .filter(item => item.mimeType !== 'application/vnd.google-apps.folder')
+                .map(file => ({
+                    ...file,
+                    linkToFile: `https://drive.google.com/file/d/${file.id}/view`
+                }));
+
+            return {
+                folderId,
+                totalFolders: folders.length,
+                totalFiles: files.length,
+                folders,
+                files
+            };
+
+        } catch (err) {
+            throw new Error(err);
+        }
+    }
+
+    async deleteFileById(fileId) {
+        try {
+            const existFile = await this.drive.files.get({ fileId, fields: 'id' });
+            if (!existFile) {
+                throw new Error("This file is not exist");
+            }
+            const file = await this.drive.files.delete({ fileId });
+            return file;
+        } catch (error) {
+            throw new Error(error);
+        }
+    }
+
+    async downloadFile(fileId: string) {
+        try {
+            const meta = await this.drive.files.get({
+                fileId,
+                fields: 'id, name'
+            });
+
+            const fileName = meta.data.name;
+
+            const res = await this.drive.files.get(
+                { fileId, alt: 'media' },
+                { responseType: 'stream' }
+            );
+
+            return {
+                stream: res.data,
+                fileName
+            };
+
+        } catch (error) {
+            throw new Error(error);
+        }
+    }
+
+    async downloadFolder(folderId: string) {
+        try {
+            const meta = await this.drive.files.get({
+                fileId: folderId,
+                fields: 'id, name'
+            });
+
+            const folderName = meta.data.name || 'folder_download';
+
+            const res = await this.drive.files.list({
+                q: `'${folderId}' in parents and trashed=false`,
+                fields: 'files(id, name, mimeType)',
+                includeItemsFromAllDrives: true,
+                supportsAllDrives: true,
+                pageSize: 1000
+            });
+
+            const items = res.data.files || [];
+
+            const archive = archiver('zip', { zlib: { level: 9 } });
+            const zipStream = new PassThrough();
+            archive.pipe(zipStream);
+
+            for (const item of items) {
+                if (item.mimeType === 'application/vnd.google-apps.folder') continue;
+
+                const fileStream = await this.drive.files.get(
+                    { fileId: item.id, alt: 'media' },
+                    { responseType: 'stream' }
+                );
+
+                archive.append(fileStream.data, { name: item.name });
+            }
+
+            archive.finalize();
+
+            return {
+                fileName: `${folderName}.zip`,
+                stream: zipStream
+            };
+
+        } catch (err) {
+            throw new Error(err);
+        }
+    }
+
+    async getMetaDataById(fileId: string) {
+        try {
+            const meta = await this.drive.files.get({
+                fileId,
+                fields: 'id, name, mimeType, size, modifiedTime',
+                supportsAllDrives: true,
+            })
+            if (!meta) {
+                throw new Error("This file is not exist");
+            }
+            const data = meta.data;
+            return {
+                id: data.id,
+                name: data.name,
+                mimeType: data.mimeType,
+                size: data.size,
+                modifiedTime: data.modifiedTime,
+            };
+        } catch (error) {
+            throw new Error(error);
         }
     }
 }
